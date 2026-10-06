@@ -694,6 +694,231 @@
   color: #fff;
 }
 
+/* Contacts */
+.contacts-card {
+  margin-bottom: 20px;
+}
+
+.contacts-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.contacts-panel .history-header {
+  margin-bottom: 0;
+}
+
+.presence-dot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+  max-width: 55%;
+  text-align: right;
+}
+
+.presence-dot::before {
+  content: '';
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+.presence-dot.online::before {
+  background: var(--call-green);
+  box-shadow: 0 0 6px var(--call-green);
+}
+
+.contacts-list {
+  max-height: 320px;
+}
+
+.contacts-empty {
+  padding: 20px 12px;
+}
+
+.contact-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+  background: linear-gradient(135deg, #10b981, #3b82f6);
+  flex-shrink: 0;
+}
+
+.contacts-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.contacts-code-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-radius: var(--radius-md);
+}
+
+.contacts-code-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.push-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-size: 11px;
+  line-height: 1.4;
+  color: #bae6fd;
+}
+
+.push-card-icon {
+  flex-shrink: 0;
+  color: #38bdf8;
+}
+
+.push-card-text {
+  flex: 1;
+}
+
+.push-card-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border-radius: var(--radius-full);
+  background: #0ea5e9;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.push-card-btn:disabled {
+  opacity: 0.6;
+}
+
+.redial-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.quick-room-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 12px;
+}
+
+.history-direction-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+}
+
+.history-item.missed .history-direction-icon,
+.history-item.missed .history-number {
+  color: #f87171;
+}
+
+.pair-code {
+  letter-spacing: 4px;
+  font-size: 28px;
+}
+
+/* Incoming call */
+.incoming-actions {
+  display: flex;
+  justify-content: center;
+  gap: 64px;
+  margin: 12px 0 8px;
+}
+
+.accept-call-btn {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px var(--call-green-glow);
+  animation: pulse-accept 1.4s infinite;
+}
+
+@keyframes pulse-accept {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+  70% { box-shadow: 0 0 0 18px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+/* Friend's plain call app */
+.plain-home {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+
+.plain-logo {
+  background: linear-gradient(135deg, #10b981, #059669);
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+}
+
+.plain-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.plain-name-field {
+  width: 100%;
+  text-align: left;
+}
+
+@media (max-width: 768px) {
+  .plain-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .contacts-card {
+    margin-bottom: 14px;
+  }
+
+  .incoming-actions {
+    gap: 48px;
+  }
+}
+
 /* Room code pad */
 .room-code-input {
   letter-spacing: 6px;

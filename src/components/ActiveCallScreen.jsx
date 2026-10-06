@@ -10,7 +10,8 @@ import {
   Share2,
   Check,
   Volume2,
-  Ear
+  Ear,
+  Phone
 } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { PRESETS } from '../constants/presets';
@@ -33,8 +34,11 @@ const CONNECTION_LABELS = {
 
 export default function ActiveCallScreen({
   roomCode,
-  role, // 'host' | 'guest'
-  callState, // 'waiting' | 'connecting' | 'connected'
+  title, // contact name for contact calls (rooms show "Room 123456")
+  role, // 'host' | 'guest' (room creator / caller can use effects)
+  callState, // 'waiting' | 'ringing' | 'incoming' | 'connecting' | 'connected'
+  onAccept,
+  onDecline,
   connectionState,
   durationSeconds,
   activePreset,
@@ -99,10 +103,12 @@ export default function ActiveCallScreen({
             {callState === 'connected' && <span className="pulse-ring" style={{ borderColor: accentColor }} />}
           </div>
 
-          <h3 className="callee-number">Room {roomCode}</h3>
+          <h3 className="callee-number">{title || `Room ${roomCode}`}</h3>
 
           <div className="call-status-badge">
             {callState === 'waiting' && <span className="status-text ringing">Waiting for your friend to join...</span>}
+            {callState === 'ringing' && <span className="status-text ringing">Calling...</span>}
+            {callState === 'incoming' && <span className="status-text ringing">Incoming call</span>}
             {callState === 'connecting' && <span className="status-text dialing">Connecting...</span>}
             {callState === 'connected' && (
               <span className="status-text connected">
@@ -123,8 +129,8 @@ export default function ActiveCallScreen({
             </div>
           )}
 
-          {/* Active Voice Pill (room creator only) */}
-          {isHost && (
+          {/* Active Voice Pill (room creator / caller only) */}
+          {isHost && callState !== 'incoming' && (
             <div className="call-voice-pill" onClick={() => setShowVoiceDrawer(!showVoiceDrawer)}>
               <span className="effect-indicator" style={{ background: currentPresetObj.color }} />
               <span>Your voice: <strong>{currentPresetObj.name}</strong></span>
@@ -161,6 +167,23 @@ export default function ActiveCallScreen({
           )}
         </div>
 
+        {callState === 'incoming' ? (
+          <div className="incoming-actions">
+            <div className="end-call-container">
+              <button type="button" className="end-call-btn" onClick={onDecline} aria-label="Decline">
+                <PhoneOff size={28} />
+              </button>
+              <span className="end-label">Decline</span>
+            </div>
+            <div className="end-call-container">
+              <button type="button" className="accept-call-btn" onClick={onAccept} aria-label="Accept">
+                <Phone size={28} />
+              </button>
+              <span className="end-label">Accept</span>
+            </div>
+          </div>
+        ) : (
+        <>
         {/* Real-Time Audio Visualizer (your outgoing voice) */}
         <div className="call-visualizer-container">
           <AudioVisualizer
@@ -258,8 +281,12 @@ export default function ActiveCallScreen({
           >
             <PhoneOff size={28} />
           </button>
-          <span className="end-label">{callState === 'waiting' ? 'Close Room' : 'End Call'}</span>
+          <span className="end-label">
+            {callState === 'waiting' ? 'Close Room' : callState === 'ringing' ? 'Cancel' : 'End Call'}
+          </span>
         </div>
+        </>
+        )}
       </div>
     </div>
   );
