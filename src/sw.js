@@ -1,5 +1,23 @@
-/* MorphCall service worker: shows incoming-call notifications and opens the app to answer. */
+/* MorphCall service worker (built by vite-plugin-pwa, injectManifest strategy):
+ * - precaches the app shell so it installs as a PWA and opens instantly / offline
+ * - shows incoming-call notifications and opens the app to answer
+ */
+import { cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from 'workbox-precaching';
+import { NavigationRoute, registerRoute } from 'workbox-routing';
 
+// List of built files injected by vite-plugin-pwa at build time
+precacheAndRoute(self.__WB_MANIFEST);
+cleanupOutdatedCaches();
+
+// Page navigations get the cached app shell; API calls always go to the network.
+// (In dev nothing is precached, so there is no shell to bind to.)
+try {
+  registerRoute(new NavigationRoute(createHandlerBoundToURL('index.html'), { denylist: [/^\/api\//] }));
+} catch {
+  // dev mode: index.html not precached
+}
+
+// New versions take over right away so a fresh deploy is picked up on the next open
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
