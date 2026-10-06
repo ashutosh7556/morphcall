@@ -963,6 +963,27 @@
   font-weight: 600;
 }
 
+.history-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.delete-log-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+}
+
+.delete-log-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
 .redial-btn:hover {
   background: rgba(16, 185, 129, 0.22);
 }
@@ -1187,6 +1208,98 @@
 
 .room-share-btn:hover {
   background: var(--primary-light);
+}
+
+.call-mode-tag.quality-good {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.call-mode-tag.quality-fair {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.call-mode-tag.quality-poor {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.call-quality-hint,
+.speaker-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  max-width: 320px;
+}
+
+.call-quality-hint {
+  margin-top: 8px;
+  color: #fca5a5;
+}
+
+.speaker-hint {
+  margin: -14px 0 18px;
+  color: var(--text-dim);
+}
+
+/* Invited guest: plain join screen */
+.guest-join {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+}
+
+.guest-card {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+}
+
+.guest-card .call-notice {
+  width: 100%;
+  margin-bottom: 0;
+  text-align: left;
+}
+
+.guest-icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 2px solid rgba(16, 185, 129, 0.4);
+}
+
+.guest-title {
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.guest-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+}
+
+.guest-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
 }
 
 .call-mode-tag.simulated {

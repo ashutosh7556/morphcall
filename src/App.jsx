@@ -15,16 +15,21 @@ import ActiveCallScreen from './components/ActiveCallScreen';
 import AudioVisualizer from './components/AudioVisualizer';
 import CellularInfoModal from './components/CellularInfoModal';
 import CallHistory from './components/CallHistory';
+import GuestJoin from './components/GuestJoin';
 import { PRESETS } from './constants/presets';
 import { RoomCall, generateRoomCode, normalizeRoomCode } from './calling/roomCall';
+import { defaultSpeakerOn, routeCallAudio } from './calling/audioOutput';
 import './App.css';
 
 // Invite links look like https://site/?room=123456
 const invitedRoomCode = normalizeRoomCode(new URLSearchParams(window.location.search).get('room'));
+// People who open an invite link get a plain call screen: only the room creator
+// can use voice effects, and guests never see that effects exist.
+const isGuestLink = Boolean(invitedRoomCode);
 
 export default function App() {
   const [roomCode, setRoomCode] = useState(invitedRoomCode || '');
-  const [activePreset, setActivePreset] = useState('kid'); // Start with Kid voice to highlight prompt feature!
+  const [activePreset, setActivePreset] = useState('normal');
   const [pitchOffset, setPitchOffset] = useState(0);
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [isTestingMic, setIsTestingMic] = useState(false);
@@ -34,15 +39,13 @@ export default function App() {
   const [callState, setCallState] = useState('idle'); // 'idle' | 'waiting' | 'connecting' | 'connected'
   const [callRole, setCallRole] = useState(null); // 'host' | 'guest'
   const [connectionState, setConnectionState] = useState(null); // WebRTC ICE state
-  const [remotePreset, setRemotePreset] = useState(null);
   const [isRemoteMuted, setIsRemoteMuted] = useState(false);
+  const [networkQuality, setNetworkQuality] = useState(null); // { level, lossPct, jitterMs, rttMs }
+  const [speakerOn, setSpeakerOn] = useState(defaultSpeakerOn);
+  const [outputMode, setOutputMode] = useState(null); // 'device' | 'volume'
   const [callDuration, setCallDuration] = useState(0);
   const [activeTab, setActiveTab] = useState(invitedRoomCode ? 'dialer' : 'effects'); // 'dialer' | 'effects' | 'history'
-  const [callNotice, setCallNotice] = useState(
-    invitedRoomCode
-      ? { type: 'info', text: `You're invited to room ${invitedRoomCode}. Pick a voice, then tap Join Room.` }
-      : null
-  ); // { type: 'error' | 'info', text }
+  const [callNotice, setCallNotice] = useState(null); // { type: 'error' | 'info', text }
 
   // Modals & History
   const [isCellularModalOpen, setIsCellularModalOpen] = useState(false);
@@ -63,13 +66,23 @@ export default function App() {
   const remoteAudioRef = useRef(null);
   const isTestingMicRef = useRef(isTestingMic);
   const activePresetRef = useRef(activePreset);
+  const pitchOffsetRef = useRef(pitchOffset);
   const isMutedRef = useRef(isMuted);
+  const speakerOnRef = useRef(speakerOn);
+  const callRoleRef = useRef(null);
 
   useEffect(() => {
     isTestingMicRef.current = isTestingMic;
     activePresetRef.current = activePreset;
+    pitchOffsetRef.current = pitchOffset;
     isMutedRef.current = isMuted;
-  }, [isTestingMic, activePreset, isMuted]);
+    speakerOnRef.current = speakerOn;
+  }, [isTestingMic, activePreset, pitchOffset, isMuted, speakerOn]);
+
+  // Neutral tab title for invited guests
+  useEffect(() => {
+    document.title = isGuestLink ? 'Voice Call' : 'MorphCall - Real-time Voice Changer';
+  }, []);
 
   // Save history to localStorage
   useEffect(() => {
@@ -92,17 +105,26 @@ export default function App() {
     };
   }, []);
 
+  // A guest in a call always sends their natural voice
+  const isGuestInCall = () => Boolean(sessionRef.current) && callRoleRef.current === 'guest';
+
   // Handle Preset Selection
   const handleSelectPreset = (presetId) => {
     setActivePreset(presetId);
-    voiceEngine.applyPreset(presetId, pitchOffset);
-    if (sessionRef.current) sessionRef.current.send({ type: 'preset', preset: presetId });
+    if (!isGuestInCall()) voiceEngine.applyPreset(presetId, pitchOffset);
   };
 
   // Handle Pitch Offset Change
   const handleChangePitchOffset = (newOffset) => {
     setPitchOffset(newOffset);
-    voiceEngine.applyPreset(activePreset, newOffset);
+    if (!isGuestInCall()) voiceEngine.applyPreset(activePreset, newOffset);
+  };
+
+  // Speaker ON/OFF like a phone call
+  const handleToggleSpeaker = () => {
+    const next = !speakerOn;
+    setSpeakerOn(next);
+    routeCallAudio(remoteAudioRef.current, next).then(setOutputMode);
   };
 
   // Handle Monitoring (Hear Myself)
@@ -177,6 +199,9 @@ export default function App() {
       remoteAudioRef.current.pause();
       remoteAudioRef.current.srcObject = null;
     }
+    callRoleRef.current = null;
+    // Restore the creator's chosen effect (a guest call forced Normal)
+    voiceEngine.applyPreset(activePresetRef.current, pitchOffsetRef.current);
 
     const info = callInfoRef.current;
     callInfoRef.current = null;
@@ -207,8 +232,9 @@ export default function App() {
     setCallState('idle');
     setCallRole(null);
     setConnectionState(null);
-    setRemotePreset(null);
     setIsRemoteMuted(false);
+    setNetworkQuality(null);
+    setOutputMode(null);
     setCallDuration(0);
     setCallNotice(reason ? { type: 'error', text: reason } : null);
 
@@ -223,9 +249,11 @@ export default function App() {
     if (sessionRef.current) return;
 
     try {
-      // Microphone -> VoiceEngine (selected effect); its output is what the friend hears
+      // Microphone -> VoiceEngine; its output is what the friend hears.
+      // Only the room creator sends the selected effect; guests send their natural voice.
       await voiceEngine.startMicrophone();
-      voiceEngine.applyPreset(activePreset, pitchOffset);
+      if (role === 'host') voiceEngine.applyPreset(activePreset, pitchOffset);
+      else voiceEngine.applyPreset('normal', 0);
       voiceEngine.setMute(false);
       setIsMuted(false);
     } catch (err) {
@@ -254,6 +282,7 @@ export default function App() {
         const el = remoteAudioRef.current;
         if (!el || sessionRef.current !== session) return;
         el.srcObject = remoteStream;
+        routeCallAudio(el, speakerOnRef.current).then(setOutputMode);
         el.play().catch(() => {
           setCallNotice({ type: 'info', text: 'Tap anywhere on the page if you cannot hear your friend.' });
         });
@@ -261,24 +290,25 @@ export default function App() {
       onMessage: (msg) => {
         if (sessionRef.current !== session) return;
         if (msg.type === 'channel-open') {
-          session.send({ type: 'preset', preset: activePresetRef.current });
           session.send({ type: 'mute', muted: isMutedRef.current });
-        } else if (msg.type === 'preset') {
-          setRemotePreset(msg.preset);
         } else if (msg.type === 'mute') {
           setIsRemoteMuted(Boolean(msg.muted));
         }
+      },
+      onQuality: (quality) => {
+        if (sessionRef.current === session) setNetworkQuality(quality);
       },
       onEnded: (reason) => finishCall(session, reason),
     });
 
     sessionRef.current = session;
-    callInfoRef.current = { code, preset: activePreset };
+    callRoleRef.current = role;
+    callInfoRef.current = { code, preset: role === 'host' ? activePreset : 'normal' };
     setCallRole(role);
     setRoomCode(code);
     setConnectionState(null);
-    setRemotePreset(null);
     setIsRemoteMuted(false);
+    setNetworkQuality(null);
     setCallNotice(null);
     setCallDuration(0);
     setCallState(role === 'host' ? 'waiting' : 'connecting');
@@ -321,6 +351,10 @@ export default function App() {
     setActiveTab('dialer');
   };
 
+  const handleDeleteHistoryEntry = (id) => {
+    setCallHistory((prev) => prev.filter((item) => item.id !== id));
+  };
+
   const handleClearHistory = () => {
     if (window.confirm('Clear all call logs?')) {
       setCallHistory([]);
@@ -338,6 +372,16 @@ export default function App() {
       {/* Friend's audio (WebRTC remote stream) */}
       <audio ref={remoteAudioRef} autoPlay playsInline />
 
+      {isGuestLink ? (
+        <GuestJoin
+          roomCode={roomCode}
+          notice={callNotice}
+          onDismissNotice={() => setCallNotice(null)}
+          onJoin={handleJoinRoom}
+          isCallInProgress={callState !== 'idle'}
+        />
+      ) : (
+      <>
       {/* Header Bar */}
       <header className="app-header">
         <div className="header-brand">
@@ -493,32 +537,13 @@ export default function App() {
               <CallHistory
                 history={callHistory}
                 onRedial={handleRedial}
+                onDeleteEntry={handleDeleteHistoryEntry}
                 onClearHistory={handleClearHistory}
               />
             </div>
           </div>
         </div>
       </main>
-
-      {/* In-Call Active Screen Modal / Overlay */}
-      {callState !== 'idle' && (
-        <ActiveCallScreen
-          roomCode={roomCode}
-          role={callRole}
-          callState={callState}
-          connectionState={connectionState}
-          durationSeconds={callDuration}
-          activePreset={activePreset}
-          onSelectPreset={handleSelectPreset}
-          remotePreset={remotePreset}
-          isRemoteMuted={isRemoteMuted}
-          isMuted={isMuted}
-          onToggleMute={handleToggleMute}
-          isMonitoring={isMonitoring}
-          onToggleMonitoring={handleToggleMonitoring}
-          onEndCall={handleEndCall}
-        />
-      )}
 
       {/* How It Works Modal */}
       <CellularInfoModal
@@ -532,6 +557,32 @@ export default function App() {
           MorphCall &bull; Free Peer-to-Peer Voice Calls with Real-Time Voice Effects &bull; Runs in your browser
         </p>
       </footer>
+      </>
+      )}
+
+      {/* In-Call Active Screen Modal / Overlay */}
+      {callState !== 'idle' && (
+        <ActiveCallScreen
+          roomCode={roomCode}
+          role={callRole}
+          callState={callState}
+          connectionState={connectionState}
+          durationSeconds={callDuration}
+          activePreset={activePreset}
+          onSelectPreset={handleSelectPreset}
+          isRemoteMuted={isRemoteMuted}
+          networkQuality={networkQuality}
+          speakerOn={speakerOn}
+          outputMode={outputMode}
+          onToggleSpeaker={handleToggleSpeaker}
+          isMuted={isMuted}
+          onToggleMute={handleToggleMute}
+          isMonitoring={isMonitoring}
+          onToggleMonitoring={handleToggleMonitoring}
+          onEndCall={handleEndCall}
+        />
+      )}
+
     </div>
   );
 }
