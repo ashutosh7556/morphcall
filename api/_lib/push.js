@@ -3,6 +3,15 @@ import { HttpError } from './http.js';
 
 let configured = false;
 
+// web-push needs a "mailto:" or https URL. Accept a bare email (e.g. "you@gmail.com")
+// in VAPID_SUBJECT too, so a common setup mistake does not break notifications.
+function vapidSubject() {
+  const raw = (process.env.VAPID_SUBJECT || '').trim().replace(/^["']|["']$/g, '');
+  if (/^(mailto:|https:\/\/)/i.test(raw)) return raw;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return `mailto:${raw}`;
+  return 'mailto:admin@example.com';
+}
+
 function ensureConfigured() {
   const publicKey = (process.env.VAPID_PUBLIC_KEY || '').trim();
   const privateKey = (process.env.VAPID_PRIVATE_KEY || '').trim();
@@ -10,7 +19,7 @@ function ensureConfigured() {
     throw new HttpError(503, 'not_configured', 'Call notifications are not configured on the server (missing VAPID keys).');
   }
   if (!configured) {
-    webpush.setVapidDetails((process.env.VAPID_SUBJECT || 'mailto:admin@example.com').trim(), publicKey, privateKey);
+    webpush.setVapidDetails(vapidSubject(), publicKey, privateKey);
     configured = true;
   }
   return publicKey;
