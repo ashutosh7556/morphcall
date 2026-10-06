@@ -426,6 +426,11 @@ export class VoiceEngine {
   }
 
   // Initialize Microphone & DSP Pipeline
+  // Choose which microphone to use ('' = system default). Takes effect on the next start.
+  setInputDevice(deviceId) {
+    this.inputDeviceId = deviceId || '';
+  }
+
   async startMicrophone() {
     await this.initAudioContext();
 
@@ -440,6 +445,7 @@ export class VoiceEngine {
           noiseSuppression: true,
           autoGainControl: false,
           channelCount: 1,
+          ...(this.inputDeviceId ? { deviceId: { exact: this.inputDeviceId } } : {}),
         },
       });
 
