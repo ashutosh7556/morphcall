@@ -16,16 +16,43 @@ import AudioVisualizer from './components/AudioVisualizer';
 import CellularInfoModal from './components/CellularInfoModal';
 import CallHistory from './components/CallHistory';
 import GuestJoin from './components/GuestJoin';
+import ContactsPanel from './components/ContactsPanel';
+import AddFriendModal from './components/AddFriendModal';
+import PlainHome from './components/PlainHome';
 import { PRESETS } from './constants/presets';
 import { RoomCall, generateRoomCode, normalizeRoomCode } from './calling/roomCall';
 import { defaultSpeakerOn, routeCallAudio } from './calling/audioOutput';
+import { ContactCall, Presence, newCallId } from './calling/contactCall';
+import { cacheContacts, getCachedContacts, getIdentity, getMode, rpc, saveName, setMode } from './calling/identity';
+import {
+  enablePushNotifications,
+  hasPushSubscription,
+  notificationPermission,
+  pushSupport,
+  refreshPushSubscription,
+  registerServiceWorker,
+} from './calling/pushNotifications';
+import { startRingtone, stopRingtone } from './calling/ringtone';
 import './App.css';
 
-// Invite links look like https://site/?room=123456
-const invitedRoomCode = normalizeRoomCode(new URLSearchParams(window.location.search).get('room'));
-// People who open an invite link get a plain call screen: only the room creator
-// can use voice effects, and guests never see that effects exist.
-const isGuestLink = Boolean(invitedRoomCode);
+const urlParams = new URLSearchParams(window.location.search);
+// Room invite links look like https://site/?room=123456
+const invitedRoomCode = normalizeRoomCode(urlParams.get('room'));
+// Add-friend links look like https://site/?add=ABCD2345
+const addFriendCode = (urlParams.get('add') || '').toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
+// Opened from an incoming-call notification: ?incoming=<callId>&from=<deviceId>&name=<name>
+const pushedCall = urlParams.get('incoming') && urlParams.get('from')
+  ? { callId: urlParams.get('incoming'), fromId: urlParams.get('from'), fromName: urlParams.get('name') || 'Contact' }
+  : null;
+if (addFriendCode || pushedCall) window.history.replaceState(null, '', window.location.pathname);
+
+// 'guest' : opened a room invite link -> plain join screen
+// 'plain' : friend's plain call app (added via an add-friend link) -> no voice effects anywhere
+// 'full'  : owner app with voice effects
+const appMode = invitedRoomCode ? 'guest' : getMode() === 'plain' || (addFriendCode && !getMode()) ? 'plain' : 'full';
+const isGuestLink = appMode === 'guest';
+
+const readPushState = (subscribed = false) => ({ ...pushSupport(), permission: notificationPermission(), subscribed });
 
 export default function App() {
   const [roomCode, setRoomCode] = useState(invitedRoomCode || '');
@@ -46,6 +73,16 @@ export default function App() {
   const [callDuration, setCallDuration] = useState(0);
   const [activeTab, setActiveTab] = useState(invitedRoomCode ? 'dialer' : 'effects'); // 'dialer' | 'effects' | 'history'
   const [callNotice, setCallNotice] = useState(null); // { type: 'error' | 'info', text }
+  const [callTitle, setCallTitle] = useState(null); // contact name during contact calls
+
+  // Contacts & presence
+  const [myName, setMyName] = useState(() => getIdentity().name);
+  const [contacts, setContacts] = useState(getCachedContacts);
+  const [presenceStatus, setPresenceStatus] = useState('connecting');
+  const [pushState, setPushState] = useState(readPushState);
+  const [isEnablingPush, setIsEnablingPush] = useState(false);
+  const [addFriendModal, setAddFriendModal] = useState(null); // null | 'share' | 'enter'
+  const [pendingAddCode, setPendingAddCode] = useState(addFriendCode);
 
   // Modals & History
   const [isCellularModalOpen, setIsCellularModalOpen] = useState(false);
@@ -60,8 +97,10 @@ export default function App() {
   });
 
   const timerRef = useRef(null);
-  const sessionRef = useRef(null); // active RoomCall
-  const callInfoRef = useRef(null); // { code, preset } while a call is in progress
+  const sessionRef = useRef(null); // active RoomCall or ContactCall
+  const presenceRef = useRef(null);
+  const incomingHandlerRef = useRef(null);
+  const callInfoRef = useRef(null); // { kind: 'room', code, preset } | { kind: 'contact', peerId, name, direction, preset }
   const connectedAtRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const isTestingMicRef = useRef(isTestingMic);
@@ -79,9 +118,69 @@ export default function App() {
     speakerOnRef.current = speakerOn;
   }, [isTestingMic, activePreset, pitchOffset, isMuted, speakerOn]);
 
-  // Neutral tab title for invited guests
+  // Neutral tab title for invited guests and the friend's plain app
   useEffect(() => {
-    document.title = isGuestLink ? 'Voice Call' : 'MorphCall - Real-time Voice Changer';
+    document.title = appMode === 'full' ? 'MorphCall - Real-time Voice Changer' : 'Voice Call';
+  }, []);
+
+  const refreshContacts = async () => {
+    try {
+      const { contacts: list } = await rpc('contacts');
+      setContacts(list);
+      cacheContacts(list);
+    } catch (err) {
+      if (err.code === 'unknown_device') {
+        setContacts([]);
+        cacheContacts([]);
+      }
+    }
+  };
+
+  // Stay reachable for contact calls while the app is open; handle notification taps
+  useEffect(() => {
+    if (appMode === 'guest') return undefined;
+
+    const presence = new Presence(getIdentity().id, {
+      onStatus: setPresenceStatus,
+      onIncoming: (call) => incomingHandlerRef.current?.(call),
+    });
+    presenceRef.current = presence;
+    presence.start();
+
+    const syncPushState = async () => setPushState(readPushState(await hasPushSubscription().catch(() => false)));
+    registerServiceWorker().then(() => refreshPushSubscription()).then(syncPushState);
+    refreshContacts();
+    // Opened by tapping an incoming-call notification: show the call after this render
+    if (pushedCall) setTimeout(() => incomingHandlerRef.current?.(pushedCall), 0);
+
+    const handleSwMessage = (event) => {
+      const data = event.data || {};
+      if (data.source !== 'morphcall-sw') return;
+      if (data.type === 'call') {
+        incomingHandlerRef.current?.(data);
+      } else if (data.type === 'cancel') {
+        const session = sessionRef.current;
+        if (session instanceof ContactCall && session.callId === data.callId && !session.accepted) {
+          session.end(`Missed call from ${session.peerName}.`, { missed: true });
+        }
+      } else if (data.type === 'friend-added') {
+        refreshContacts();
+        setCallNotice({ type: 'info', text: `${data.name || 'Your friend'} added you as a contact.` });
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+
+    const handleFocus = () => {
+      refreshContacts();
+      syncPushState();
+    };
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
+      window.removeEventListener('focus', handleFocus);
+      presence.destroy();
+    };
   }, []);
 
   // Save history to localStorage
@@ -177,6 +276,7 @@ export default function App() {
   };
 
   const markConnected = () => {
+    stopRingtone();
     connectedAtRef.current = Date.now();
     voiceEngine.playCallChime('connect');
     setCallState('connected');
@@ -187,9 +287,10 @@ export default function App() {
 
   // Cleanup when a call ends (either side, or on error). Runs once per session and
   // only reads refs, because it is also called from WebRTC event handlers.
-  const finishCall = (session, reason) => {
+  const finishCall = (session, reason, { missed = false } = {}) => {
     if (sessionRef.current !== session) return;
     sessionRef.current = null;
+    stopRingtone();
 
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -214,22 +315,28 @@ export default function App() {
     if (info) {
       const mins = Math.floor(totalSecs / 60);
       const secs = totalSecs % 60;
-      setCallHistory((prev) => [
-        {
-          id: Date.now().toString(),
-          number: `Room ${info.code}`,
-          preset: info.preset,
-          duration: wasConnected
-            ? `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-            : 'Not connected',
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-        ...prev,
-      ]);
+      const duration = wasConnected
+        ? `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+        : info.kind === 'contact'
+          ? missed && info.direction === 'incoming' ? 'Missed' : 'No answer'
+          : 'Not connected';
+      const entry = {
+        id: Date.now().toString(),
+        number: info.kind === 'contact' ? info.name : `Room ${info.code}`,
+        preset: info.preset,
+        duration,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      if (info.kind === 'contact') {
+        entry.contactId = info.peerId;
+        entry.direction = missed && info.direction === 'incoming' && !wasConnected ? 'missed' : info.direction;
+      }
+      setCallHistory((prev) => [entry, ...prev]);
     }
 
     voiceEngine.playCallChime('hangup');
     setCallState('idle');
+    setCallTitle(null);
     setCallRole(null);
     setConnectionState(null);
     setIsRemoteMuted(false);
@@ -244,73 +351,254 @@ export default function App() {
     }
   };
 
-  // Start a browser-to-browser call: 'host' creates the room, 'guest' joins it
-  const startSession = async (role, code) => {
-    if (sessionRef.current) return;
-
-    try {
-      // Microphone -> VoiceEngine; its output is what the friend hears.
-      // Only the room creator sends the selected effect; guests send their natural voice.
-      await voiceEngine.startMicrophone();
-      if (role === 'host') voiceEngine.applyPreset(activePreset, pitchOffset);
-      else voiceEngine.applyPreset('normal', 0);
-      voiceEngine.setMute(false);
-      setIsMuted(false);
-    } catch (err) {
-      setCallNotice({ type: 'error', text: `Microphone permission is required: ${err.message}` });
-      return;
-    }
-
+  // Microphone -> VoiceEngine -> a copy of its output for the call.
+  // withEffects: the selected effect (room creator / caller); otherwise the natural voice.
+  const prepareOutboundStream = async (withEffects) => {
+    await voiceEngine.startMicrophone();
+    if (withEffects) voiceEngine.applyPreset(activePresetRef.current, pitchOffsetRef.current);
+    else voiceEngine.applyPreset('normal', 0);
+    voiceEngine.setMute(false);
+    setIsMuted(false);
     const outbound = voiceEngine.getOutboundStream();
-    if (!outbound) {
-      setCallNotice({ type: 'error', text: 'Voice engine is not ready. Please try again.' });
-      return;
-    }
+    if (!outbound) throw new Error('Voice engine is not ready. Please try again.');
     // The call gets its own copy so ending it never stops the engine's stream
-    const localStream = outbound.clone();
+    return outbound.clone();
+  };
 
-    const session = new RoomCall({
-      onStatus: (status) => {
-        if (sessionRef.current !== session) return;
-        if (status === 'connected') markConnected();
-        else setCallState(status);
-      },
-      onConnectionState: (state) => {
-        if (sessionRef.current === session) setConnectionState(state);
-      },
-      onRemoteStream: (remoteStream) => {
-        const el = remoteAudioRef.current;
-        if (!el || sessionRef.current !== session) return;
-        el.srcObject = remoteStream;
-        routeCallAudio(el, speakerOnRef.current).then(setOutputMode);
-        el.play().catch(() => {
-          setCallNotice({ type: 'info', text: 'Tap anywhere on the page if you cannot hear your friend.' });
-        });
-      },
-      onMessage: (msg) => {
-        if (sessionRef.current !== session) return;
-        if (msg.type === 'channel-open') {
-          session.send({ type: 'mute', muted: isMutedRef.current });
-        } else if (msg.type === 'mute') {
-          setIsRemoteMuted(Boolean(msg.muted));
-        }
-      },
-      onQuality: (quality) => {
-        if (sessionRef.current === session) setNetworkQuality(quality);
-      },
-      onEnded: (reason) => finishCall(session, reason),
-    });
+  // Callbacks shared by room calls and contact calls
+  const sessionHandlers = (getSession) => ({
+    onStatus: (status) => {
+      if (sessionRef.current !== getSession()) return;
+      if (status === 'connected') markConnected();
+      else setCallState(status);
+    },
+    onConnectionState: (state) => {
+      if (sessionRef.current === getSession()) setConnectionState(state);
+    },
+    onRemoteStream: (remoteStream) => {
+      const el = remoteAudioRef.current;
+      if (!el || sessionRef.current !== getSession()) return;
+      el.srcObject = remoteStream;
+      routeCallAudio(el, speakerOnRef.current).then(setOutputMode);
+      el.play().catch(() => {
+        setCallNotice({ type: 'info', text: 'Tap anywhere on the page if you cannot hear your friend.' });
+      });
+    },
+    onMessage: (msg) => {
+      const session = getSession();
+      if (sessionRef.current !== session) return;
+      if (msg.type === 'channel-open') {
+        session.send({ type: 'mute', muted: isMutedRef.current });
+      } else if (msg.type === 'mute') {
+        setIsRemoteMuted(Boolean(msg.muted));
+      }
+    },
+    onQuality: (quality) => {
+      if (sessionRef.current === getSession()) setNetworkQuality(quality);
+    },
+    onEnded: (reason, info) => finishCall(getSession(), reason, info),
+  });
 
-    sessionRef.current = session;
+  const resetCallUi = (role) => {
     callRoleRef.current = role;
-    callInfoRef.current = { code, preset: role === 'host' ? activePreset : 'normal' };
     setCallRole(role);
-    setRoomCode(code);
     setConnectionState(null);
     setIsRemoteMuted(false);
     setNetworkQuality(null);
     setCallNotice(null);
     setCallDuration(0);
+  };
+
+  // ----- Contact calls -----
+
+  const startContactCall = async (contact) => {
+    if (sessionRef.current) return;
+    const presence = presenceRef.current;
+    if (!presence?.isOnline) {
+      setCallNotice({ type: 'error', text: 'Still connecting to the call service. Try again in a moment.' });
+      return;
+    }
+
+    // Caller-only effects: the owner app sends the selected effect; the plain app never does
+    const withEffects = appMode === 'full';
+    let localStream;
+    try {
+      localStream = await prepareOutboundStream(withEffects);
+    } catch (err) {
+      setCallNotice({ type: 'error', text: `Microphone permission is required: ${err.message}` });
+      return;
+    }
+
+    const callId = newCallId();
+    let session = null;
+    session = new ContactCall(
+      presence,
+      { role: 'caller', callId, peerId: contact.id, peerName: contact.name, myName: getIdentity().name || 'Friend' },
+      {
+        ...sessionHandlers(() => session),
+        onCancelRing: () => rpc('cancel', { to: contact.id, callId }).catch(() => {}),
+      }
+    );
+    sessionRef.current = session;
+    callInfoRef.current = {
+      kind: 'contact',
+      peerId: contact.id,
+      name: contact.name,
+      direction: 'outgoing',
+      preset: withEffects ? activePresetRef.current : null,
+    };
+    resetCallUi(withEffects ? 'host' : 'guest');
+    setCallTitle(contact.name);
+    setCallState('ringing');
+
+    // Push notification rings the contact's phone even when their app is closed
+    rpc('ring', { to: contact.id, callId }).catch(() => {});
+    session.startOutgoing(localStream);
+  };
+
+  // Incoming ring: direct (app open) or from a notification tap
+  const handleIncomingCall = ({ callId, fromId, fromName, conn }) => {
+    const current = sessionRef.current;
+    if (current) {
+      if (current instanceof ContactCall && current.callId === callId) return; // same call, already showing
+      if (conn) {
+        conn.on('open', () => {
+          conn.send({ type: 'busy' });
+          setTimeout(() => conn.close(), 400);
+        });
+      }
+      return;
+    }
+
+    const saved = contacts.find((c) => c.id === fromId);
+    const peerName = saved?.name || fromName || 'Contact';
+    let session = null;
+    session = new ContactCall(
+      presenceRef.current,
+      { role: 'callee', callId, peerId: fromId, peerName, myName: getIdentity().name || 'Friend', conn },
+      sessionHandlers(() => session)
+    );
+    sessionRef.current = session;
+    // The person receiving the call always sends their natural voice
+    callInfoRef.current = { kind: 'contact', peerId: fromId, name: peerName, direction: 'incoming', preset: null };
+    resetCallUi('guest');
+    setCallTitle(peerName);
+    session.showIncoming();
+    startRingtone();
+  };
+
+  // Presence and service-worker callbacks always reach the latest handler
+  useEffect(() => {
+    incomingHandlerRef.current = handleIncomingCall;
+  });
+
+  const waitForPresence = async (timeoutMs = 10000) => {
+    const end = Date.now() + timeoutMs;
+    while (!presenceRef.current?.isOnline && Date.now() < end) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return Boolean(presenceRef.current?.isOnline);
+  };
+
+  const handleAcceptIncoming = async () => {
+    const session = sessionRef.current;
+    if (!(session instanceof ContactCall)) return;
+    stopRingtone();
+    let localStream;
+    try {
+      localStream = await prepareOutboundStream(false);
+    } catch (err) {
+      session.decline();
+      setCallNotice({ type: 'error', text: `Microphone permission is required: ${err.message}` });
+      return;
+    }
+    if (!(await waitForPresence())) {
+      localStream.getTracks().forEach((t) => t.stop());
+      session.end('Could not reach the call service. Check your internet connection.');
+      return;
+    }
+    session.accept(localStream);
+  };
+
+  const handleDeclineIncoming = () => {
+    stopRingtone();
+    if (sessionRef.current instanceof ContactCall) sessionRef.current.decline();
+  };
+
+  const handleRemoveContact = async (contact) => {
+    if (!window.confirm(`Remove ${contact.name} from your contacts?`)) return;
+    try {
+      await rpc('removeContact', { friendId: contact.id });
+    } catch (err) {
+      setCallNotice({ type: 'error', text: err.message });
+    }
+    refreshContacts();
+  };
+
+  const handleEnablePush = async () => {
+    setIsEnablingPush(true);
+    try {
+      await enablePushNotifications();
+      setCallNotice({ type: 'info', text: 'Call notifications are on. Your contacts can ring you even when the app is closed.' });
+    } catch (err) {
+      setCallNotice({ type: 'error', text: err.message });
+    } finally {
+      setIsEnablingPush(false);
+      setPushState(readPushState(await hasPushSubscription().catch(() => false)));
+    }
+  };
+
+  const rememberName = async (name) => {
+    const identity = saveName(name);
+    setMyName(identity.name);
+    await rpc('register', { name: identity.name });
+  };
+
+  const handleCreatePairCode = async (name) => {
+    await rememberName(name);
+    return rpc('pairCreate');
+  };
+
+  const handleRedeemPairCode = async (code, name) => {
+    await rememberName(name);
+    const { friend } = await rpc('pairRedeem', { code, name });
+    await refreshContacts();
+    return friend;
+  };
+
+  // Friend opened an add-friend link: save the contact and become a plain call app
+  const handleRedeemPending = async (name) => {
+    const friend = await handleRedeemPairCode(pendingAddCode, name);
+    if (!getMode()) setMode('plain');
+    setPendingAddCode(null);
+    setCallNotice({
+      type: 'info',
+      text: `${friend.name} is now in your contacts. Turn on notifications below so you can receive calls.`,
+    });
+  };
+
+  // ----- Room calls -----
+
+  // Start a browser-to-browser call: 'host' creates the room, 'guest' joins it
+  const startSession = async (role, code) => {
+    if (sessionRef.current) return;
+
+    // Only the room creator sends the selected effect; guests send their natural voice
+    let localStream;
+    try {
+      localStream = await prepareOutboundStream(role === 'host');
+    } catch (err) {
+      setCallNotice({ type: 'error', text: `Microphone permission is required: ${err.message}` });
+      return;
+    }
+
+    let session = null;
+    session = new RoomCall(sessionHandlers(() => session));
+
+    sessionRef.current = session;
+    callInfoRef.current = { kind: 'room', code, preset: role === 'host' ? activePreset : 'normal' };
+    resetCallUi(role);
+    setRoomCode(code);
     setCallState(role === 'host' ? 'waiting' : 'connecting');
 
     try {
@@ -341,12 +629,16 @@ export default function App() {
     session.hangup();
   };
 
-  // Rejoin a room from history
-  const handleRedial = (label, preset) => {
-    const code = normalizeRoomCode(label);
+  // Call back a contact, or rejoin a room, from history
+  const handleRedial = (item) => {
+    if (item.contactId) {
+      startContactCall(contacts.find((c) => c.id === item.contactId) || { id: item.contactId, name: item.number });
+      return;
+    }
+    const code = normalizeRoomCode(item.number);
     if (code) setRoomCode(code);
-    if (preset) {
-      handleSelectPreset(preset);
+    if (item.preset) {
+      handleSelectPreset(item.preset);
     }
     setActiveTab('dialer');
   };
@@ -380,6 +672,27 @@ export default function App() {
           onJoin={handleJoinRoom}
           isCallInProgress={callState !== 'idle'}
         />
+      ) : appMode === 'plain' ? (
+        <PlainHome
+          myName={myName}
+          pendingAddCode={pendingAddCode}
+          onRedeemPending={handleRedeemPending}
+          notice={callNotice}
+          onDismissNotice={() => setCallNotice(null)}
+          history={callHistory}
+          onRedial={handleRedial}
+          onDeleteEntry={handleDeleteHistoryEntry}
+          onClearHistory={handleClearHistory}
+          contacts={contacts}
+          presenceStatus={presenceStatus}
+          pushState={pushState}
+          onEnablePush={handleEnablePush}
+          isEnablingPush={isEnablingPush}
+          onCall={startContactCall}
+          onRemove={handleRemoveContact}
+          isCallInProgress={callState !== 'idle'}
+          onEnterCode={() => setAddFriendModal('enter')}
+        />
       ) : (
       <>
       {/* Header Bar */}
@@ -411,8 +724,8 @@ export default function App() {
       <div className="limitation-banner" onClick={() => setIsCellularModalOpen(true)}>
         <AlertCircle size={16} className="banner-icon" />
         <p className="banner-text">
-          <strong>Free browser-to-browser calls:</strong> create a room, share the 6-digit code, and talk with your
-          friend using your morphed voice. No phone numbers, no accounts, no cost.
+          <strong>Free browser-to-browser calls:</strong> add a friend once with a one-time code, then call them anytime
+          with your morphed voice. No phone numbers, no accounts, no cost.
         </p>
         <span className="banner-link">Learn more &rarr;</span>
       </div>
@@ -490,9 +803,25 @@ export default function App() {
             </div>
           </div>
 
-          {/* Column 2: Room Call Pad */}
+          {/* Column 2: Contacts + Room Call Pad */}
           <div className={`panel-column dialer-column ${activeTab === 'dialer' ? 'tab-visible' : 'tab-hidden-mobile'}`}>
+            <div className="glass-panel contacts-card">
+              <ContactsPanel
+                contacts={contacts}
+                presenceStatus={presenceStatus}
+                pushState={pushState}
+                onEnablePush={handleEnablePush}
+                isEnablingPush={isEnablingPush}
+                onCall={startContactCall}
+                onRemove={handleRemoveContact}
+                isCallInProgress={callState !== 'idle'}
+                onAddFriend={() => setAddFriendModal('share')}
+                onEnterCode={() => setAddFriendModal('enter')}
+              />
+            </div>
+
             <div className="glass-panel dialer-card">
+              <h3 className="quick-room-title">Quick room (no contact needed)</h3>
               <div className="dialer-status-bar">
                 <div className="carrier-badge">
                   <span className="signal-bars">
@@ -560,12 +889,26 @@ export default function App() {
       </>
       )}
 
+      {/* Add Friend with a one-time code */}
+      <AddFriendModal
+        key={addFriendModal || 'closed'}
+        isOpen={Boolean(addFriendModal)}
+        initialMode={addFriendModal || 'share'}
+        myName={myName}
+        onClose={() => setAddFriendModal(null)}
+        onCreateCode={handleCreatePairCode}
+        onRedeemCode={handleRedeemPairCode}
+      />
+
       {/* In-Call Active Screen Modal / Overlay */}
       {callState !== 'idle' && (
         <ActiveCallScreen
           roomCode={roomCode}
+          title={callTitle}
           role={callRole}
           callState={callState}
+          onAccept={handleAcceptIncoming}
+          onDecline={handleDeclineIncoming}
           connectionState={connectionState}
           durationSeconds={callDuration}
           activePreset={activePreset}
