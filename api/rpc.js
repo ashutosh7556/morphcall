@@ -13,9 +13,12 @@ const PAIR_TTL_SECONDS = 15 * 60;
 const PAIR_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const DEVICE_ID = /^[a-z0-9]{16,40}$/;
 
-const devKey = (id) => `dev:${id}`;
-const friendsKey = (id) => `friends:${id}`;
-const pairKey = (code) => `pair:${code}`;
+// Every key lives under "morphcall:" so the app can safely share a Redis database
+// with other projects (e.g. Skyllect's "tkps-scan:" keys) without ever touching them.
+const NS = 'morphcall:';
+const devKey = (id) => `${NS}dev:${id}`;
+const friendsKey = (id) => `${NS}friends:${id}`;
+const pairKey = (code) => `${NS}pair:${code}`;
 
 const hashSecret = (secret) => createHash('sha256').update(String(secret)).digest('hex');
 
