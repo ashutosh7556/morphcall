@@ -1,8 +1,8 @@
 import React from 'react';
-import { History, Trash2, Clock, PhoneForwarded } from 'lucide-react';
+import { History, Trash2, Clock, PhoneForwarded, X } from 'lucide-react';
 import { PRESETS } from '../constants/presets';
 
-export default function CallHistory({ history, onRedial, onClearHistory }) {
+export default function CallHistory({ history, onRedial, onDeleteEntry, onClearHistory }) {
   if (history.length === 0) {
     return (
       <div className="history-empty">
@@ -27,7 +27,7 @@ export default function CallHistory({ history, onRedial, onClearHistory }) {
           title="Clear call log"
         >
           <Trash2 size={14} />
-          <span>Clear</span>
+          <span>Clear All</span>
         </button>
       </div>
 
@@ -52,15 +52,26 @@ export default function CallHistory({ history, onRedial, onClearHistory }) {
                 </div>
               </div>
 
-              <button
-                type="button"
-                className="redial-btn"
-                onClick={() => onRedial(item.number, item.preset)}
-                title="Rejoin this room with the same voice effect"
-              >
-                <PhoneForwarded size={16} />
-                <span>Rejoin</span>
-              </button>
+              <div className="history-item-actions">
+                <button
+                  type="button"
+                  className="redial-btn"
+                  onClick={() => onRedial(item.number, item.preset)}
+                  title="Rejoin this room with the same voice effect"
+                >
+                  <PhoneForwarded size={16} />
+                  <span>Rejoin</span>
+                </button>
+                <button
+                  type="button"
+                  className="delete-log-btn"
+                  onClick={() => onDeleteEntry(item.id)}
+                  title="Delete this call log"
+                  aria-label={`Delete call log for ${item.number}`}
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
           );
         })}

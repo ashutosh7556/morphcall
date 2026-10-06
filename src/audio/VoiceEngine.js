@@ -290,7 +290,9 @@ export class VoiceEngine {
   async initAudioContext() {
     if (!this.audioCtx) {
       const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
+      // 'balanced' uses a slightly larger audio buffer than the default 'interactive',
+      // which avoids crackles and dropouts on busy phones during calls
+      this.audioCtx = new AudioCtxClass({ latencyHint: 'balanced' });
 
       // Register worklet
       try {

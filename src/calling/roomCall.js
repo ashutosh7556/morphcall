@@ -22,6 +22,22 @@ const ICE_SERVERS = [
   { urls: 'stun:stun.cloudflare.com:3478' },
 ];
 
+// Opus tuned for unstable mobile networks: in-band FEC rebuilds lost packets, a moderate
+// mono bitrate survives congestion, DTX off avoids clipped word starts.
+function tuneOpus(sdp) {
+  const match = sdp.match(/a=rtpmap:(\d+) opus\/48000[^\r\n]*/i);
+  if (!match) return sdp;
+  const pt = match[1];
+  const params = 'minptime=10;useinbandfec=1;usedtx=0;stereo=0;sprop-stereo=0;maxaveragebitrate=40000';
+  const fmtp = new RegExp(`a=fmtp:${pt} [^\\r\\n]*`);
+  return fmtp.test(sdp)
+    ? sdp.replace(fmtp, `a=fmtp:${pt} ${params}`)
+    : sdp.replace(match[0], `${match[0]}\r\na=fmtp:${pt} ${params}`);
+}
+
+// Larger receive buffer smooths network jitter (fewer gaps) at the cost of ~100 ms delay
+const JITTER_BUFFER_MS = 150;
+
 export function generateRoomCode() {
   const n = crypto.getRandomValues(new Uint32Array(1))[0] % 900000;
   return String(100000 + n);
@@ -37,7 +53,8 @@ export function normalizeRoomCode(value) {
  * - onStatus(status): 'waiting' | 'connecting' | 'connected'
  * - onConnectionState(state): raw ICE state for display ('checking', 'connected', ...)
  * - onRemoteStream(stream): friend's audio
- * - onMessage(msg): { type: 'preset' | 'mute', ... } from the friend
+ * - onMessage(msg): { type: 'mute', ... } from the friend
+ * - onQuality({ level, lossPct, jitterMs, rttMs }): network quality every 2 s
  * - onEnded(reason | null): call is over (reason is shown to the user)
  */
 export class RoomCall {
@@ -50,6 +67,8 @@ export class RoomCall {
     this.ended = false;
     this.connected = false;
     this.timeoutId = null;
+    this.statsId = null;
+    this.lastStats = null;
   }
 
   // Create a room and wait for a friend to join it
@@ -65,7 +84,7 @@ export class RoomCall {
       }
       this.handlers.onStatus('connecting');
       this.startTimeout();
-      call.answer(this.localStream);
+      call.answer(this.localStream, { sdpTransform: tuneOpus });
       this.attachCall(call);
     });
 
@@ -87,7 +106,7 @@ export class RoomCall {
 
     const target = ID_PREFIX + roomCode;
     this.attachData(this.peer.connect(target, { reliable: true }));
-    this.attachCall(this.peer.call(target, this.localStream));
+    this.attachCall(this.peer.call(target, this.localStream, { sdpTransform: tuneOpus }));
   }
 
   openPeer(id) {
@@ -134,6 +153,8 @@ export class RoomCall {
         if ((state === 'connected' || state === 'completed') && !this.connected) {
           this.connected = true;
           this.clearTimeout();
+          this.tuneTransport(pc);
+          this.startStats(pc);
           this.handlers.onStatus('connected');
         } else if (state === 'failed') {
           this.end('Could not connect directly. One of your networks blocks peer-to-peer audio; try a different Wi-Fi or mobile data.');
@@ -142,6 +163,65 @@ export class RoomCall {
       pc.addEventListener('iceconnectionstatechange', update);
       update();
     }
+  }
+
+  tuneTransport(pc) {
+    for (const receiver of pc.getReceivers()) {
+      if (receiver.track?.kind === 'audio' && 'jitterBufferTarget' in receiver) {
+        try {
+          receiver.jitterBufferTarget = JITTER_BUFFER_MS;
+        } catch {
+          // not supported in this browser
+        }
+      }
+    }
+    for (const sender of pc.getSenders()) {
+      if (sender.track?.kind !== 'audio') continue;
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+        params.encodings[0].priority = 'high';
+        params.encodings[0].networkPriority = 'high';
+        sender.setParameters(params).catch(() => {});
+      } catch {
+        // not supported in this browser
+      }
+    }
+  }
+
+  // Packet loss, jitter and round-trip time of the incoming audio, sampled every 2 s
+  startStats(pc) {
+    this.statsId = setInterval(async () => {
+      try {
+        const report = await pc.getStats();
+        let inbound = null;
+        let rtt = null;
+        report.forEach((s) => {
+          if (s.type === 'inbound-rtp' && s.kind === 'audio') inbound = s;
+          if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded' && s.currentRoundTripTime != null) {
+            rtt = s.currentRoundTripTime * 1000;
+          }
+        });
+        if (!inbound) return;
+
+        const prev = this.lastStats;
+        this.lastStats = { received: inbound.packetsReceived || 0, lost: inbound.packetsLost || 0 };
+        if (!prev) return;
+
+        const received = this.lastStats.received - prev.received;
+        const lost = Math.max(0, this.lastStats.lost - prev.lost);
+        const lossPct = received + lost > 0 ? (lost / (received + lost)) * 100 : 0;
+        const jitterMs = (inbound.jitter || 0) * 1000;
+
+        let level = 'good';
+        if (lossPct > 8 || jitterMs > 60 || (rtt != null && rtt > 500)) level = 'poor';
+        else if (lossPct > 2 || jitterMs > 30 || (rtt != null && rtt > 250)) level = 'fair';
+
+        this.handlers.onQuality?.({ level, lossPct, jitterMs, rttMs: rtt });
+      } catch {
+        // stats unavailable
+      }
+    }, 2000);
   }
 
   attachData(conn) {
@@ -195,6 +275,7 @@ export class RoomCall {
     if (this.ended) return;
     this.ended = true;
     this.clearTimeout();
+    if (this.statsId) clearInterval(this.statsId);
     try {
       if (this.call) this.call.close();
       if (this.conn) this.conn.close();

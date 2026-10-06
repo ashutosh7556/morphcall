@@ -8,10 +8,18 @@ import {
   Sliders,
   Copy,
   Share2,
-  Check
+  Check,
+  Volume2,
+  Ear
 } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { PRESETS } from '../constants/presets';
+
+const QUALITY_LABELS = {
+  good: 'Network: Good',
+  fair: 'Network: Fair',
+  poor: 'Network: Weak',
+};
 
 const CONNECTION_LABELS = {
   new: 'Starting',
@@ -31,8 +39,11 @@ export default function ActiveCallScreen({
   durationSeconds,
   activePreset,
   onSelectPreset,
-  remotePreset,
   isRemoteMuted,
+  networkQuality,
+  speakerOn,
+  outputMode, // 'device' | 'volume' (browser cannot switch outputs)
+  onToggleSpeaker,
   isMuted,
   onToggleMute,
   isMonitoring,
@@ -41,6 +52,8 @@ export default function ActiveCallScreen({
 }) {
   const [showVoiceDrawer, setShowVoiceDrawer] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Only the room creator can use (or see) voice effects
+  const isHost = role === 'host';
 
   // Format call duration MM:SS
   const formatTime = (totalSec) => {
@@ -52,10 +65,11 @@ export default function ActiveCallScreen({
   const inviteLink = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
 
   const handleShare = async () => {
-    const text = `Join my MorphCall voice room: ${roomCode}`;
+    // Neutral wording: the invite does not mention voice effects
+    const text = `Join my voice call (room ${roomCode})`;
     if (navigator.share) {
       try {
-        await navigator.share({ title: 'MorphCall', text, url: inviteLink });
+        await navigator.share({ title: 'Voice call', text, url: inviteLink });
         return;
       } catch {
         // cancelled or unsupported: fall back to copying
@@ -71,7 +85,7 @@ export default function ActiveCallScreen({
   };
 
   const currentPresetObj = PRESETS.find((p) => p.id === activePreset) || PRESETS[0];
-  const remotePresetObj = PRESETS.find((p) => p.id === remotePreset);
+  const accentColor = isHost ? currentPresetObj.color : '#8b5cf6';
 
   return (
     <div className="active-call-modal">
@@ -79,10 +93,10 @@ export default function ActiveCallScreen({
         {/* Call Header */}
         <div className="call-header">
           <div className="caller-avatar-pulse">
-            <div className="avatar-circle" style={{ borderColor: currentPresetObj.color }}>
+            <div className="avatar-circle" style={{ borderColor: accentColor }}>
               <User size={36} color="#ffffff" />
             </div>
-            {callState === 'connected' && <span className="pulse-ring" style={{ borderColor: currentPresetObj.color }} />}
+            {callState === 'connected' && <span className="pulse-ring" style={{ borderColor: accentColor }} />}
           </div>
 
           <h3 className="callee-number">Room {roomCode}</h3>
@@ -109,12 +123,14 @@ export default function ActiveCallScreen({
             </div>
           )}
 
-          {/* Active Voice Pill */}
-          <div className="call-voice-pill" onClick={() => setShowVoiceDrawer(!showVoiceDrawer)}>
-            <span className="effect-indicator" style={{ background: currentPresetObj.color }} />
-            <span>Your voice: <strong>{currentPresetObj.name}</strong></span>
-            <span className="tap-change">Tap to change</span>
-          </div>
+          {/* Active Voice Pill (room creator only) */}
+          {isHost && (
+            <div className="call-voice-pill" onClick={() => setShowVoiceDrawer(!showVoiceDrawer)}>
+              <span className="effect-indicator" style={{ background: currentPresetObj.color }} />
+              <span>Your voice: <strong>{currentPresetObj.name}</strong></span>
+              <span className="tap-change">Tap to change</span>
+            </div>
+          )}
 
           {/* Connection & friend status */}
           <div className="call-meta-row">
@@ -123,16 +139,29 @@ export default function ActiveCallScreen({
                 {CONNECTION_LABELS[connectionState] || connectionState}
               </span>
             )}
-            {callState === 'connected' && remotePresetObj && (
-              <span className="call-mode-tag simulated">Friend: {remotePresetObj.name}</span>
+            {callState === 'connected' && networkQuality && (
+              <span
+                className={`call-mode-tag quality-${networkQuality.level}`}
+                title={`Loss ${networkQuality.lossPct.toFixed(1)}% · Jitter ${Math.round(networkQuality.jitterMs)} ms${
+                  networkQuality.rttMs != null ? ` · Delay ${Math.round(networkQuality.rttMs)} ms` : ''
+                }`}
+              >
+                {QUALITY_LABELS[networkQuality.level]}
+              </span>
             )}
             {callState === 'connected' && isRemoteMuted && (
               <span className="call-mode-tag conn-failed">Friend muted</span>
             )}
           </div>
+
+          {callState === 'connected' && networkQuality?.level === 'poor' && (
+            <p className="call-quality-hint">
+              Weak connection: voice may break up. Move closer to Wi-Fi, or switch between Wi-Fi and mobile data.
+            </p>
+          )}
         </div>
 
-        {/* Real-Time Audio Visualizer (your outgoing morphed voice) */}
+        {/* Real-Time Audio Visualizer (your outgoing voice) */}
         <div className="call-visualizer-container">
           <AudioVisualizer
             isActive={callState !== 'waiting' || isMonitoring}
@@ -141,13 +170,13 @@ export default function ActiveCallScreen({
             height={85}
           />
           <div className="visualizer-info">
-            <span>Your Morphed Voice</span>
-            <span>{isMuted ? 'Microphone Muted' : 'Mic Live & Filtered'}</span>
+            <span>{isHost ? 'Your Morphed Voice' : 'Your Voice'}</span>
+            <span>{isMuted ? 'Microphone Muted' : isHost ? 'Mic Live & Filtered' : 'Mic Live'}</span>
           </div>
         </div>
 
         {/* In-Call Quick Voice Drawer */}
-        {showVoiceDrawer && (
+        {isHost && showVoiceDrawer && (
           <div className="incall-voice-drawer">
             <div className="drawer-title">
               <Sliders size={14} />
@@ -188,16 +217,36 @@ export default function ActiveCallScreen({
             <span className="btn-label">{isMuted ? 'Unmute' : 'Mute'}</span>
           </button>
 
-          {/* Loopback Monitor (Hear Myself) */}
+          {/* Speaker ON/OFF */}
           <button
             type="button"
-            className={`control-circle-btn ${isMonitoring ? 'active' : ''}`}
-            onClick={onToggleMonitoring}
+            className={`control-circle-btn ${speakerOn ? 'active' : ''}`}
+            onClick={onToggleSpeaker}
+            aria-pressed={speakerOn}
           >
-            <Headphones size={22} />
-            <span className="btn-label">Hear Myself</span>
+            {speakerOn ? <Volume2 size={22} /> : <Ear size={22} />}
+            <span className="btn-label">{speakerOn ? 'Speaker On' : 'Speaker Off'}</span>
           </button>
+
+          {/* Loopback Monitor (Hear Myself), room creator only */}
+          {isHost && (
+            <button
+              type="button"
+              className={`control-circle-btn ${isMonitoring ? 'active' : ''}`}
+              onClick={onToggleMonitoring}
+            >
+              <Headphones size={22} />
+              <span className="btn-label">Hear Myself</span>
+            </button>
+          )}
         </div>
+
+        {outputMode === 'volume' && (
+          <p className="speaker-hint">
+            {speakerOn ? 'Speaker on: full volume.' : 'Speaker off: handset volume.'} This browser chooses the output
+            device itself.
+          </p>
+        )}
 
         {/* Hang Up Action Button */}
         <div className="end-call-container">
