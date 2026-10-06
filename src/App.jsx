@@ -1,24 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  Phone,
-  Sparkles,
-  Info,
-  History,
-  Sliders,
-  AlertCircle,
-  X
-} from 'lucide-react';
+import { AlertCircle, X } from 'lucide-react';
 import { voiceEngine } from './audio/VoiceEngine';
-import DialerPad from './components/DialerPad';
-import VoiceSelector from './components/VoiceSelector';
 import ActiveCallScreen from './components/ActiveCallScreen';
-import AudioVisualizer from './components/AudioVisualizer';
 import CellularInfoModal from './components/CellularInfoModal';
-import CallHistory from './components/CallHistory';
 import GuestJoin from './components/GuestJoin';
-import ContactsPanel from './components/ContactsPanel';
 import AddFriendModal from './components/AddFriendModal';
 import PlainHome from './components/PlainHome';
+import { BottomNav, Sidebar, TopBar } from './components/dashboard/Navigation';
+import EffectsCard from './components/dashboard/EffectsCard';
+import CallCard from './components/dashboard/CallCard';
+import { classifyInput } from './components/dashboard/helpers';
+import { ContactsCard, RecentCallsCard } from './components/dashboard/ListCards';
+import { FeatureStrip, MicrophoneCard } from './components/dashboard/MicrophoneCard';
+import SettingsModal from './components/dashboard/SettingsModal';
+import './styles/dashboard.css';
 import { PRESETS } from './constants/presets';
 import { RoomCall, generateRoomCode, normalizeRoomCode } from './calling/roomCall';
 import { defaultSpeakerOn, routeCallAudio } from './calling/audioOutput';
@@ -71,7 +66,21 @@ export default function App() {
   const [speakerOn, setSpeakerOn] = useState(defaultSpeakerOn);
   const [outputMode, setOutputMode] = useState(null); // 'device' | 'volume'
   const [callDuration, setCallDuration] = useState(0);
-  const [activeTab, setActiveTab] = useState(invitedRoomCode ? 'dialer' : 'effects'); // 'dialer' | 'effects' | 'history'
+  const [activeView, setActiveView] = useState('home'); // 'home' | 'effects' | 'contacts' | 'recents'
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [contactSearch, setContactSearch] = useState('');
+  const [codeInput, setCodeInput] = useState('');
+  const [selectedContactId, setSelectedContactId] = useState(null);
+  const [friendCodeDraft, setFriendCodeDraft] = useState('');
+  const [micDeviceId, setMicDeviceId] = useState(() => {
+    try {
+      const saved = localStorage.getItem('morphcall_mic') || '';
+      voiceEngine.setInputDevice(saved);
+      return saved;
+    } catch {
+      return '';
+    }
+  });
   const [callNotice, setCallNotice] = useState(null); // { type: 'error' | 'info', text }
   const [callTitle, setCallTitle] = useState(null); // contact name during contact calls
 
@@ -95,6 +104,9 @@ export default function App() {
     }
     return [];
   });
+
+  const selectedContact = contacts.find((c) => c.id === selectedContactId) || null;
+  const pushOn = pushState.supported && pushState.permission === 'granted' && pushState.subscribed;
 
   const timerRef = useRef(null);
   const sessionRef = useRef(null); // active RoomCall or ContactCall
@@ -120,7 +132,7 @@ export default function App() {
 
   // Neutral tab title for invited guests and the friend's plain app
   useEffect(() => {
-    document.title = appMode === 'full' ? 'MorphCall - Real-time Voice Changer' : 'Voice Call';
+    document.title = 'Voice Call';
   }, []);
 
   const refreshContacts = async () => {
@@ -629,18 +641,16 @@ export default function App() {
     session.hangup();
   };
 
-  // Call back a contact, or rejoin a room, from history
+  // Call back a contact, or put a room code back into the call box, from history
   const handleRedial = (item) => {
     if (item.contactId) {
       startContactCall(contacts.find((c) => c.id === item.contactId) || { id: item.contactId, name: item.number });
       return;
     }
     const code = normalizeRoomCode(item.number);
-    if (code) setRoomCode(code);
-    if (item.preset) {
-      handleSelectPreset(item.preset);
-    }
-    setActiveTab('dialer');
+    if (code) setCodeInput(code);
+    if (item.preset && appMode === 'full') handleSelectPreset(item.preset);
+    handleNavigate('home');
   };
 
   const handleDeleteHistoryEntry = (id) => {
@@ -653,279 +663,301 @@ export default function App() {
     }
   };
 
+  // ----- Dashboard navigation & inputs -----
+
+  const handleNavigate = (view) => {
+    if (view === 'settings') {
+      setSettingsOpen(true);
+      return;
+    }
+    setActiveView(view);
+    // Desktop shows every card at once: scroll to the chosen one
+    if (window.matchMedia('(min-width: 900px)').matches) {
+      const el = view === 'home' ? null : document.getElementById(`section-${view}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      else window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0 });
+    }
+  };
+
+  // Shared by the call box and the top search: room code, friend code or contact name
+  const actOnInput = (text, { callContact }) => {
+    const parsed = classifyInput(text);
+    if (parsed.kind === 'room') {
+      startSession('guest', parsed.value);
+      return true;
+    }
+    if (parsed.kind === 'friendCode') {
+      setFriendCodeDraft(parsed.value);
+      setAddFriendModal('enter');
+      return true;
+    }
+    if (parsed.kind === 'search') {
+      const match = contacts.find((c) => c.name.toLowerCase().includes(parsed.value));
+      if (!match) {
+        setCallNotice({ type: 'error', text: `No contact named "${text.trim()}".` });
+        return false;
+      }
+      setSelectedContactId(match.id);
+      if (callContact) startContactCall(match);
+      return true;
+    }
+    return false;
+  };
+
+  const handleCallNow = () => {
+    if (!codeInput.trim()) {
+      if (selectedContact) startContactCall(selectedContact);
+      return;
+    }
+    if (actOnInput(codeInput, { callContact: true })) setCodeInput('');
+  };
+
+  const handleTopSearchSubmit = () => {
+    if (actOnInput(contactSearch, { callContact: false }) && classifyInput(contactSearch).kind !== 'search') {
+      setContactSearch('');
+    }
+  };
+
+  const handleSelectContact = (contact) => {
+    setSelectedContactId(contact.id);
+    if (!window.matchMedia('(min-width: 900px)').matches) handleNavigate('home');
+  };
+
+  const handleSelectMicDevice = async (deviceId) => {
+    setMicDeviceId(deviceId);
+    try {
+      localStorage.setItem('morphcall_mic', deviceId);
+    } catch {
+      // ignore
+    }
+    voiceEngine.setInputDevice(deviceId);
+    // Restart a running preview on the new microphone (never during a call)
+    if (voiceEngine.isMicActive && !sessionRef.current) {
+      voiceEngine.stopMicrophone();
+      try {
+        await voiceEngine.startMicrophone();
+        voiceEngine.setMonitoring(isMonitoring);
+      } catch (err) {
+        setIsTestingMic(false);
+        setCallNotice({ type: 'error', text: `Could not use that microphone: ${err.message}` });
+      }
+    }
+  };
+
+  const handleBellClick = () => {
+    if (pushOn) {
+      setCallNotice({ type: 'info', text: 'Call notifications are on. Contacts can ring you even when the app is closed.' });
+    } else if (pushState.supported && pushState.permission !== 'denied') {
+      handleEnablePush();
+    } else {
+      setCallNotice({
+        type: 'error',
+        text: pushState.supported ? 'Notifications are blocked in your browser settings.' : pushState.reason,
+      });
+    }
+  };
+
+  const handleSaveName = async (name) => {
+    try {
+      await rememberName(name);
+    } catch (err) {
+      setCallNotice({ type: 'error', text: err.message });
+    }
+  };
+
   const currentPresetObj = PRESETS.find((p) => p.id === activePreset) || PRESETS[0];
+  const isPlain = appMode === 'plain';
+  const isInCall = callState !== 'idle';
 
-  return (
-    <div className="app-container">
-      {/* Decorative ambient background glows */}
-      <div className="ambient-glow glow-1" />
-      <div className="ambient-glow glow-2" />
+  const callScreen = isInCall && (
+    <ActiveCallScreen
+      roomCode={roomCode}
+      title={callTitle}
+      role={callRole}
+      callState={callState}
+      onAccept={handleAcceptIncoming}
+      onDecline={handleDeclineIncoming}
+      connectionState={connectionState}
+      durationSeconds={callDuration}
+      activePreset={activePreset}
+      onSelectPreset={handleSelectPreset}
+      isRemoteMuted={isRemoteMuted}
+      networkQuality={networkQuality}
+      speakerOn={speakerOn}
+      outputMode={outputMode}
+      onToggleSpeaker={handleToggleSpeaker}
+      isMuted={isMuted}
+      onToggleMute={handleToggleMute}
+      isMonitoring={isMonitoring}
+      onToggleMonitoring={handleToggleMonitoring}
+      onEndCall={handleEndCall}
+    />
+  );
 
-      {/* Friend's audio (WebRTC remote stream) */}
-      <audio ref={remoteAudioRef} autoPlay playsInline />
+  const remoteAudio = <audio ref={remoteAudioRef} autoPlay playsInline />;
 
-      {isGuestLink ? (
+  // Invited to a quick room: plain join screen
+  if (isGuestLink) {
+    return (
+      <div className="app-container">
+        {remoteAudio}
         <GuestJoin
           roomCode={roomCode}
           notice={callNotice}
           onDismissNotice={() => setCallNotice(null)}
           onJoin={handleJoinRoom}
-          isCallInProgress={callState !== 'idle'}
+          isCallInProgress={isInCall}
         />
-      ) : appMode === 'plain' ? (
-        <PlainHome
+        {callScreen}
+      </div>
+    );
+  }
+
+  // Friend opened an add-friend link: save the contact first
+  if (isPlain && pendingAddCode) {
+    return (
+      <div className="app-container">
+        {remoteAudio}
+        <PlainHome myName={myName} pendingAddCode={pendingAddCode} onRedeemPending={handleRedeemPending} />
+        {callScreen}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`app-shell view-${activeView} ${isPlain ? 'is-plain' : ''}`}>
+      {remoteAudio}
+
+      <Sidebar activeView={activeView} onNavigate={handleNavigate} plain={isPlain} />
+
+      <div className="shell-main">
+        <TopBar
+          search={contactSearch}
+          onSearchChange={setContactSearch}
+          onSearchSubmit={handleTopSearchSubmit}
+          pushOn={pushOn}
+          onBellClick={handleBellClick}
           myName={myName}
-          pendingAddCode={pendingAddCode}
-          onRedeemPending={handleRedeemPending}
-          notice={callNotice}
-          onDismissNotice={() => setCallNotice(null)}
-          history={callHistory}
-          onRedial={handleRedial}
-          onDeleteEntry={handleDeleteHistoryEntry}
-          onClearHistory={handleClearHistory}
-          contacts={contacts}
-          presenceStatus={presenceStatus}
-          pushState={pushState}
-          onEnablePush={handleEnablePush}
-          isEnablingPush={isEnablingPush}
-          onCall={startContactCall}
-          onRemove={handleRemoveContact}
-          isCallInProgress={callState !== 'idle'}
-          onEnterCode={() => setAddFriendModal('enter')}
+          isOnline={presenceStatus === 'online'}
+          onAvatarClick={() => setSettingsOpen(true)}
         />
-      ) : (
-      <>
-      {/* Header Bar */}
-      <header className="app-header">
-        <div className="header-brand">
-          <div className="brand-logo-icon">
-            <Sparkles size={22} className="logo-sparkle" />
-          </div>
-          <div className="brand-text">
-            <h1 className="brand-name">MorphCall</h1>
-            <span className="brand-tagline">Free Voice-Changing Calls</span>
-          </div>
-        </div>
 
-        <div className="header-actions">
-          <button
-            type="button"
-            className="cellular-info-btn"
-            onClick={() => setIsCellularModalOpen(true)}
-            title="How MorphCall works"
-          >
-            <Info size={16} />
-            <span className="info-btn-text">How It Works</span>
-          </button>
-        </div>
-      </header>
+        {callNotice && (
+          <div className={`toast ${callNotice.type}`} role="status">
+            <AlertCircle size={16} />
+            <span>{callNotice.text}</span>
+            <button type="button" onClick={() => setCallNotice(null)} aria-label="Dismiss">
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
-      {/* Notice Banner */}
-      <div className="limitation-banner" onClick={() => setIsCellularModalOpen(true)}>
-        <AlertCircle size={16} className="banner-icon" />
-        <p className="banner-text">
-          <strong>Free browser-to-browser calls:</strong> add a friend once with a one-time code, then call them anytime
-          with your morphed voice. No phone numbers, no accounts, no cost.
-        </p>
-        <span className="banner-link">Learn more &rarr;</span>
+        <main className="dash-grid">
+          {!isPlain && (
+            <EffectsCard
+              activePreset={activePreset}
+              onSelectPreset={handleSelectPreset}
+              pitchOffset={pitchOffset}
+              onChangePitchOffset={handleChangePitchOffset}
+              isTestingMic={isTestingMic}
+              onToggleTestMic={handleToggleTestMic}
+              isMonitoring={isMonitoring}
+              onToggleMonitoring={handleToggleMonitoring}
+            />
+          )}
+
+          <CallCard
+            plain={isPlain}
+            selectedContact={selectedContact}
+            contacts={contacts}
+            input={codeInput}
+            onInputChange={setCodeInput}
+            onSelectContact={(c) => setSelectedContactId(c.id)}
+            onCallNow={handleCallNow}
+            onQuickCall={handleCreateRoom}
+            activePresetObj={currentPresetObj}
+            onOpenEffects={() => handleNavigate('effects')}
+            isCallInProgress={isInCall}
+          />
+
+          <div className="dash-right">
+            <ContactsCard
+              contacts={contacts}
+              search={contactSearch}
+              onSearchChange={setContactSearch}
+              selectedId={selectedContact?.id}
+              onSelect={handleSelectContact}
+              onCall={startContactCall}
+              onRemove={handleRemoveContact}
+              onAddFriend={() => setAddFriendModal('share')}
+              onEnterCode={() => {
+                setFriendCodeDraft('');
+                setAddFriendModal('enter');
+              }}
+              pushState={pushState}
+              onEnablePush={handleEnablePush}
+              isEnablingPush={isEnablingPush}
+              isCallInProgress={isInCall}
+              canShare={!isPlain}
+            />
+            <RecentCallsCard
+              history={callHistory}
+              onRedial={handleRedial}
+              onDelete={handleDeleteHistoryEntry}
+              onClearAll={handleClearHistory}
+            />
+          </div>
+
+          <MicrophoneCard
+            isLive={isTestingMic || isInCall}
+            selectedDeviceId={micDeviceId}
+            onSelectDevice={handleSelectMicDevice}
+          />
+          <FeatureStrip />
+        </main>
       </div>
 
-      {/* Main Workspace Layout */}
-      <main className="main-layout">
-        {/* Mobile Navigation Tabs */}
-        <nav className="tab-navigation">
-          <button
-            type="button"
-            className={`nav-tab-btn ${activeTab === 'dialer' ? 'active' : ''}`}
-            onClick={() => setActiveTab('dialer')}
-          >
-            <Phone size={18} />
-            <span>Call</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-tab-btn ${activeTab === 'effects' ? 'active' : ''}`}
-            onClick={() => setActiveTab('effects')}
-          >
-            <Sliders size={18} />
-            <span>Voice Effects</span>
-            <span className="tab-preset-pill" style={{ background: currentPresetObj.color }}>
-              {currentPresetObj.name.split(' ')[0]}
-            </span>
-          </button>
-          <button
-            type="button"
-            className={`nav-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
-            onClick={() => setActiveTab('history')}
-          >
-            <History size={18} />
-            <span>Recents</span>
-            {callHistory.length > 0 && (
-              <span className="count-badge">{callHistory.length}</span>
-            )}
-          </button>
-        </nav>
+      <BottomNav activeView={activeView} onNavigate={handleNavigate} plain={isPlain} />
 
-        {/* Dual Panel (Desktop side-by-side, mobile tabbed) */}
-        <div className="content-grid">
-          {/* Column 1: Voice Changer Selection */}
-          <div className={`panel-column voice-column ${activeTab === 'effects' ? 'tab-visible' : 'tab-hidden-mobile'}`}>
-            <div className="glass-panel">
-              <VoiceSelector
-                activePreset={activePreset}
-                onSelectPreset={handleSelectPreset}
-                pitchOffset={pitchOffset}
-                onChangePitchOffset={handleChangePitchOffset}
-                isMonitoring={isMonitoring}
-                onToggleMonitoring={handleToggleMonitoring}
-                isTestingMic={isTestingMic}
-                onToggleTestMic={handleToggleTestMic}
-              />
-
-              {/* Real-Time Microphone Preview Visualizer */}
-              <div className="preview-visualizer-box">
-                <div className="box-header">
-                  <div className="status-indicator">
-                    <span className={`dot ${isTestingMic || callState !== 'idle' ? 'live' : ''}`} />
-                    <span>{isTestingMic ? 'Live Mic Morphing' : 'Microphone Standby'}</span>
-                  </div>
-                  <span className="active-badge" style={{ color: currentPresetObj.color }}>
-                    {currentPresetObj.name}
-                  </span>
-                </div>
-                <AudioVisualizer
-                  isActive={isTestingMic || callState === 'connected'}
-                  preset={activePreset}
-                  isMuted={isMuted}
-                  height={75}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Column 2: Contacts + Room Call Pad */}
-          <div className={`panel-column dialer-column ${activeTab === 'dialer' ? 'tab-visible' : 'tab-hidden-mobile'}`}>
-            <div className="glass-panel contacts-card">
-              <ContactsPanel
-                contacts={contacts}
-                presenceStatus={presenceStatus}
-                pushState={pushState}
-                onEnablePush={handleEnablePush}
-                isEnablingPush={isEnablingPush}
-                onCall={startContactCall}
-                onRemove={handleRemoveContact}
-                isCallInProgress={callState !== 'idle'}
-                onAddFriend={() => setAddFriendModal('share')}
-                onEnterCode={() => setAddFriendModal('enter')}
-              />
-            </div>
-
-            <div className="glass-panel dialer-card">
-              <h3 className="quick-room-title">Quick room (no contact needed)</h3>
-              <div className="dialer-status-bar">
-                <div className="carrier-badge">
-                  <span className="signal-bars">
-                    <span /><span /><span /><span />
-                  </span>
-                  <span>Free P2P Call</span>
-                </div>
-                <div className="active-effect-pill" style={{ borderColor: currentPresetObj.color }}>
-                  <span className="effect-dot" style={{ background: currentPresetObj.color }} />
-                  <span>Voice: <strong>{currentPresetObj.name}</strong></span>
-                </div>
-              </div>
-
-              {callNotice && (
-                <div className={`call-notice ${callNotice.type}`} role="status">
-                  <AlertCircle size={15} className="call-notice-icon" />
-                  <span>{callNotice.text}</span>
-                  <button
-                    type="button"
-                    className="call-notice-close"
-                    onClick={() => setCallNotice(null)}
-                    aria-label="Dismiss"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              )}
-
-              <DialerPad
-                roomCode={roomCode}
-                onRoomCodeChange={setRoomCode}
-                onJoinRoom={handleJoinRoom}
-                onCreateRoom={handleCreateRoom}
-                isCallInProgress={callState !== 'idle'}
-              />
-            </div>
-          </div>
-
-          {/* Column 3: Call Recents & Logs */}
-          <div className={`panel-column history-column ${activeTab === 'history' ? 'tab-visible' : 'tab-hidden-mobile'}`}>
-            <div className="glass-panel">
-              <CallHistory
-                history={callHistory}
-                onRedial={handleRedial}
-                onDeleteEntry={handleDeleteHistoryEntry}
-                onClearHistory={handleClearHistory}
-              />
-            </div>
-          </div>
-        </div>
-      </main>
-
-      {/* How It Works Modal */}
-      <CellularInfoModal
-        isOpen={isCellularModalOpen}
-        onClose={() => setIsCellularModalOpen(false)}
+      <SettingsModal
+        key={settingsOpen ? 'open' : 'closed'}
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        plain={isPlain}
+        myName={myName}
+        onSaveName={handleSaveName}
+        pushOn={pushOn}
+        pushState={pushState}
+        onEnablePush={handleEnablePush}
+        isEnablingPush={isEnablingPush}
+        onHowItWorks={() => {
+          setSettingsOpen(false);
+          setIsCellularModalOpen(true);
+        }}
+        onClearHistory={handleClearHistory}
+        onJoinRoom={(code) => {
+          setSettingsOpen(false);
+          startSession('guest', code);
+        }}
       />
 
-      {/* Footer */}
-      <footer className="app-footer">
-        <p>
-          MorphCall &bull; Free Peer-to-Peer Voice Calls with Real-Time Voice Effects &bull; Runs in your browser
-        </p>
-      </footer>
-      </>
-      )}
+      {!isPlain && <CellularInfoModal isOpen={isCellularModalOpen} onClose={() => setIsCellularModalOpen(false)} />}
 
-      {/* Add Friend with a one-time code */}
       <AddFriendModal
-        key={addFriendModal || 'closed'}
+        key={addFriendModal ? `${addFriendModal}-${friendCodeDraft}` : 'closed'}
         isOpen={Boolean(addFriendModal)}
         initialMode={addFriendModal || 'share'}
+        initialCode={friendCodeDraft}
+        allowShare={!isPlain}
         myName={myName}
         onClose={() => setAddFriendModal(null)}
         onCreateCode={handleCreatePairCode}
         onRedeemCode={handleRedeemPairCode}
       />
 
-      {/* In-Call Active Screen Modal / Overlay */}
-      {callState !== 'idle' && (
-        <ActiveCallScreen
-          roomCode={roomCode}
-          title={callTitle}
-          role={callRole}
-          callState={callState}
-          onAccept={handleAcceptIncoming}
-          onDecline={handleDeclineIncoming}
-          connectionState={connectionState}
-          durationSeconds={callDuration}
-          activePreset={activePreset}
-          onSelectPreset={handleSelectPreset}
-          isRemoteMuted={isRemoteMuted}
-          networkQuality={networkQuality}
-          speakerOn={speakerOn}
-          outputMode={outputMode}
-          onToggleSpeaker={handleToggleSpeaker}
-          isMuted={isMuted}
-          onToggleMute={handleToggleMute}
-          isMonitoring={isMonitoring}
-          onToggleMonitoring={handleToggleMonitoring}
-          onEndCall={handleEndCall}
-        />
-      )}
-
+      {callScreen}
     </div>
   );
 }

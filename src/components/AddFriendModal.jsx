@@ -7,11 +7,20 @@ import { formatPairCode } from '../calling/identity';
  * mode 'share' : create a code / invite link to send (room creator's app)
  * mode 'enter' : type a code a friend sent you
  */
-export default function AddFriendModal({ isOpen, initialMode = 'share', myName, onClose, onCreateCode, onRedeemCode }) {
-  const [mode, setMode] = useState(initialMode);
+export default function AddFriendModal({
+  isOpen,
+  initialMode = 'share',
+  initialCode = '',
+  allowShare = true,
+  myName,
+  onClose,
+  onCreateCode,
+  onRedeemCode,
+}) {
+  const [mode, setMode] = useState(allowShare ? initialMode : 'enter');
   const [name, setName] = useState(myName || '');
   const [code, setCode] = useState(null); // { code, expiresAt }
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(initialCode);
   const [status, setStatus] = useState(null); // { type: 'error' | 'success' | 'busy', text }
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -97,14 +106,16 @@ export default function AddFriendModal({ isOpen, initialMode = 'share', myName, 
           </button>
         </div>
 
-        <div className="modal-tabs">
-          <button type="button" className={`tab-btn ${mode === 'share' ? 'active' : ''}`} onClick={() => { setMode('share'); setStatus(null); }}>
-            Share my code
-          </button>
-          <button type="button" className={`tab-btn ${mode === 'enter' ? 'active' : ''}`} onClick={() => { setMode('enter'); setStatus(null); }}>
-            Enter a code
-          </button>
-        </div>
+        {allowShare && (
+          <div className="modal-tabs">
+            <button type="button" className={`tab-btn ${mode === 'share' ? 'active' : ''}`} onClick={() => { setMode('share'); setStatus(null); }}>
+              Share my code
+            </button>
+            <button type="button" className={`tab-btn ${mode === 'enter' ? 'active' : ''}`} onClick={() => { setMode('enter'); setStatus(null); }}>
+              Enter a code
+            </button>
+          </div>
+        )}
 
         <div className="modal-body">
           <div className="form-group">

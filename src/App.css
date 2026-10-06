@@ -101,6 +101,48 @@
   border-color: rgba(255, 255, 255, 0.2);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.install-app-btn {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+
+.install-app-btn:hover {
+  background: rgba(16, 185, 129, 0.24);
+  color: #6ee7b7;
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.install-help-card {
+  max-width: 460px;
+}
+
+.install-steps {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.install-steps strong {
+  color: #f1f5f9;
+}
+
+.inline-icon {
+  display: inline-block;
+  vertical-align: -2px;
+  color: var(--primary-light);
+}
+
 /* Limitation Notice Banner */
 .limitation-banner {
   margin: 14px 0 16px;
@@ -2319,5 +2361,16 @@
 
   .glass-panel:hover {
     border-color: var(--border-glass);
+  }
+}
+
+/* Keep the Install label visible on phones (other header labels collapse to icons) */
+@media (max-width: 768px) {
+  .header-actions .install-app-btn .info-btn-text {
+    display: inline;
+  }
+
+  .install-app-btn {
+    padding: 8px 12px;
   }
 }
