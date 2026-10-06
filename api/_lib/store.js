@@ -2,16 +2,38 @@
 // an in-memory map for local development when no Redis credentials are set.
 import { HttpError } from './http.js';
 
-const url = () => process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || '';
-const token = () => process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || '';
+// Accepts the names Vercel's Upstash integration creates, with or without a custom
+// prefix (e.g. KV_REST_API_URL, STORAGE_KV_REST_API_URL, UPSTASH_REDIS_REST_URL).
+function findEnv(suffixes, exclude) {
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!value || (exclude && exclude.test(name))) continue;
+    if (suffixes.some((suffix) => name === suffix || name.endsWith(`_${suffix}`))) return value.trim();
+  }
+  return '';
+}
+
+const url = () => findEnv(['UPSTASH_REDIS_REST_URL', 'KV_REST_API_URL']);
+const token = () => findEnv(['UPSTASH_REDIS_REST_TOKEN', 'KV_REST_API_TOKEN'], /READ_ONLY/);
+
+// Names (never values) of database-looking variables, to explain configuration problems
+const relatedEnvNames = () =>
+  Object.keys(process.env).filter((name) => /REDIS|UPSTASH|(^|_)KV_/.test(name)).sort();
 
 async function redis(...command) {
-  const res = await fetch(url(), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(command),
-  });
+  let res;
+  try {
+    res = await fetch(url(), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(command),
+    });
+  } catch (err) {
+    throw new HttpError(503, 'db_unreachable', `Could not reach the Upstash Redis database (${err.message}). Check the REST URL.`);
+  }
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 || res.status === 403) {
+    throw new HttpError(503, 'db_auth_failed', 'The Upstash Redis token was rejected. Reconnect the database in Vercel and redeploy.');
+  }
   if (!res.ok || data.error) throw new Error(`Redis error: ${data.error || res.status}`);
   return data.result;
 }
@@ -32,7 +54,16 @@ function memGet(key) {
 function isMemoryMode() {
   if (url() && token()) return false;
   if (process.env.VERCEL) {
-    throw new HttpError(503, 'not_configured', 'Contacts are not configured on the server (missing Upstash Redis).');
+    const found = relatedEnvNames();
+    throw new HttpError(
+      503,
+      'not_configured',
+      `Contacts are not configured on the server (missing Upstash Redis REST URL/token). ${
+        found.length
+          ? `Database variables found: ${found.join(', ')}. The REST URL and REST token are needed (names ending in KV_REST_API_URL and KV_REST_API_TOKEN).`
+          : 'No database variables found: connect an Upstash Redis database to this project in Vercel and redeploy.'
+      }`
+    );
   }
   return true;
 }
