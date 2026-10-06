@@ -3,6 +3,7 @@ import path from 'node:path'
 import { parseEnv } from 'node:util'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // Load .env into process.env for the api/ handlers only (local dev; Vercel injects its own).
 // Variables without the VITE_ prefix are never bundled into the React app.
@@ -50,7 +51,44 @@ export default defineConfig(({ mode }) => {
   applyDotEnv(mode)
 
   return {
-    plugins: [react(), vercelApiDev()],
+    plugins: [
+      react(),
+      vercelApiDev(),
+      // Installable PWA. injectManifest keeps our own service worker (src/sw.js, which also
+      // handles incoming-call push notifications) and adds precaching of the built files.
+      VitePWA({
+        strategies: 'injectManifest',
+        srcDir: 'src',
+        filename: 'sw.js',
+        injectRegister: false, // registered in src/calling/pushNotifications.js
+        registerType: 'autoUpdate',
+        includeAssets: ['apple-touch-icon.png'],
+        manifest: {
+          id: '/',
+          name: 'Voice Call',
+          short_name: 'Voice Call',
+          description: 'Free browser voice calls with your contacts.',
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          orientation: 'portrait',
+          background_color: '#090a0f',
+          theme_color: '#090a0f',
+          icons: [
+            { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        },
+        injectManifest: {
+          globPatterns: ['**/*.{js,css,html,png,svg,ico}'],
+        },
+        devOptions: {
+          enabled: true,
+          type: 'module',
+        },
+      }),
+    ],
     server: {
       host: true,
       // HTTPS tunnels for testing on a phone (browsers only allow the mic and push on secure origins)

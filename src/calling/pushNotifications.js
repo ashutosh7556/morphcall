@@ -3,6 +3,7 @@
  * Service worker + Web Push subscription so contacts can ring this device even when
  * the app is closed.
  */
+import { registerSW } from 'virtual:pwa-register';
 import { getIdentity, rpc } from './identity';
 
 export const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -37,11 +38,18 @@ export function notificationPermission() {
 
 let registrationPromise = null;
 
+// vite-plugin-pwa registers the right worker for dev (/dev-sw.js) and production (/sw.js)
 export function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return Promise.resolve(null);
-  registrationPromise ??= navigator.serviceWorker.register('/sw.js').catch((err) => {
-    console.warn('Service worker registration failed', err);
-    return null;
+  registrationPromise ??= new Promise((resolve) => {
+    registerSW({
+      immediate: true,
+      onRegisteredSW: (_url, registration) => resolve(registration || null),
+      onRegisterError: (err) => {
+        console.warn('Service worker registration failed', err);
+        resolve(null);
+      },
+    });
   });
   return registrationPromise;
 }
